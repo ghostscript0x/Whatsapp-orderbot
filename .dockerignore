@@ -1,0 +1,24 @@
+# Never send secrets or local state to the build context.
+.env
+.env.*
+!.env.example
+
+node_modules
+.next
+out
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+.git
+.gitignore
+.vscode
+.idea
+.claude
+*.log
+npm-debug.log*
+
+Dockerfile
+Dockerfile.worker
+docker-compose*.yml
+.dockerignore

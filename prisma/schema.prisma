@@ -1,0 +1,341 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum Role {
+  OWNER
+  STAFF
+}
+
+enum WaStatus {
+  DISCONNECTED
+  STARTING
+  QR_PENDING
+  CONNECTED
+  NEEDS_RESCAN
+}
+
+enum MessageDirection {
+  IN
+  OUT
+}
+
+enum MessageSender {
+  CUSTOMER
+  BOT
+  STAFF
+}
+
+enum OrderStatus {
+  NEW
+  CONFIRMED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+model Tenant {
+  id           String       @id @default(cuid())
+  name         String
+  slug         String       @unique
+  status       TenantStatus @default(ACTIVE)
+  currency     String       @default("NGN")
+  timezone     String       @default("Africa/Lagos")
+  orderCounter Int          @default(1000)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  memberships     Membership[]
+  invites         Invite[]
+  whatsappSession WhatsAppSession?
+  botSettings     BotSettings?
+  categories      Category[]
+  products        Product[]
+  productImages   ProductImage[]
+  customers       Customer[]
+  conversations   Conversation[]
+  messages        Message[]
+  orders          Order[]
+  orderItems      OrderItem[]
+  orderEvents     OrderStatusEvent[]
+  webhookEvents   WebhookEvent[]
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  isPlatformAdmin Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships   Membership[]
+  resetTokens   PasswordResetToken[]
+  statusChanges OrderStatusEvent[]
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String
+  tenantId  String
+  role      Role
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+}
+
+/// Staff invitation. tokenHash = sha256(token); the raw token only lives in the invite link.
+model Invite {
+  id         String    @id @default(cuid())
+  tenantId   String
+  email      String
+  role       Role      @default(STAFF)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, email])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model WhatsAppSession {
+  id               String    @id @default(cuid())
+  tenantId         String    @unique
+  openwaSessionId  String    @unique
+  phone            String?
+  status           WaStatus  @default(DISCONNECTED)
+  qr               String?
+  webhookSecretEnc String
+  lastSeenAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model BotSettings {
+  id                  String   @id @default(cuid())
+  tenantId            String   @unique
+  botName             String   @default("Assistant")
+  tone                String   @default("friendly and concise")
+  greeting            String   @default("Hi! How can I help you today?")
+  /// { "mon": [{ "open": "09:00", "close": "18:00" }], ... } in the tenant timezone
+  businessHours       Json     @default("{}")
+  deliveryFeeKobo     Int      @default(0)
+  deliveryAreas       String   @default("")
+  paymentInstructions String   @default("")
+  faq                 String   @default("")
+  ownerAlertPhone     String?
+  /// { "CONFIRMED": "...", "OUT_FOR_DELIVERY": "...", ... } with {orderNumber} {customerName} placeholders
+  statusTemplates     Json     @default("{}")
+  updatedAt           DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, sortOrder])
+}
+
+model Product {
+  id          String    @id @default(cuid())
+  tenantId    String
+  categoryId  String?
+  name        String
+  description String    @default("")
+  priceKobo   Int
+  available   Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant     Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category   Category?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  images     ProductImage[]
+  orderItems OrderItem[]
+
+  @@index([tenantId, deletedAt, available])
+  @@index([tenantId, categoryId])
+}
+
+model ProductImage {
+  id         String   @id @default(cuid())
+  tenantId   String
+  productId  String
+  url        String
+  storageKey String
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, productId, position])
+}
+
+model Customer {
+  id          String   @id @default(cuid())
+  tenantId    String
+  waChatId    String
+  phone       String
+  name        String?
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation?
+  orders       Order[]
+
+  @@unique([tenantId, waChatId])
+  @@index([tenantId, phone])
+}
+
+model Conversation {
+  id             String    @id @default(cuid())
+  tenantId       String
+  customerId     String    @unique
+  botPaused      Boolean   @default(false)
+  botPausedAt    DateTime?
+  needsHuman     Boolean   @default(false)
+  needsHumanNote String?
+  lastMessageAt  DateTime  @default(now())
+  lastStaffReplyAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([tenantId, lastMessageAt])
+  @@index([tenantId, needsHuman])
+}
+
+model Message {
+  id             String           @id @default(cuid())
+  tenantId       String
+  conversationId String
+  direction      MessageDirection
+  sender         MessageSender
+  type           String           @default("text")
+  body           String           @default("")
+  mediaUrl       String?
+  waMessageId    String?
+  createdAt      DateTime         @default(now())
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, conversationId, createdAt])
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  tenantId        String
+  number          String
+  customerId      String
+  status          OrderStatus @default(NEW)
+  subtotalKobo    Int
+  deliveryFeeKobo Int
+  totalKobo       Int
+  customerName    String
+  deliveryAddress String
+  notes           String      @default("")
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items    OrderItem[]
+  events   OrderStatusEvent[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, customerId])
+}
+
+model OrderItem {
+  id            String @id @default(cuid())
+  tenantId      String
+  orderId       String
+  productId     String
+  nameSnapshot  String
+  unitPriceKobo Int
+  quantity      Int
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, orderId])
+}
+
+model OrderStatusEvent {
+  id         String       @id @default(cuid())
+  tenantId   String
+  orderId    String
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+  byUserId   String?
+  createdAt  DateTime     @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  byUser User?  @relation(fields: [byUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, orderId, createdAt])
+}
+
+model WebhookEvent {
+  id             String    @id @default(cuid())
+  tenantId       String
+  idempotencyKey String    @unique
+  event          String
+  receivedAt     DateTime  @default(now())
+  processedAt    DateTime?
+  error          String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, receivedAt])
+}

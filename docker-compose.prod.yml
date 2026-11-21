@@ -1,0 +1,108 @@
+# Production stack for a single VPS. See docs/DEPLOY.md.
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# Required in .env.production (besides the app vars from .env.example):
+#   APP_DOMAIN          e.g. orders.example.com (DNS A/AAAA record must point at this server)
+#   POSTGRES_PASSWORD   URL-safe, e.g. `openssl rand -hex 24`
+# DATABASE_URL and REDIS_URL are built here from the internal service names; any values in the env file are overridden.
+
+x-app-env: &app-env
+  env_file: .env.production
+  environment:
+    NODE_ENV: production
+    DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/orderbot
+    REDIS_URL: redis://redis:6379
+
+services:
+  postgres:
+    image: postgres:16.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: orderbot
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d orderbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-bookworm
+    restart: unless-stopped
+    # AOF persistence: BullMQ jobs and dedupe keys survive a restart. noeviction: BullMQ requires it.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: applies pending Prisma migrations, then exits. app and worker wait for it to succeed.
+  migrate:
+    build: { context: ., dockerfile: Dockerfile.worker }
+    image: orderbot-worker:${IMAGE_TAG:-local}
+    <<: *app-env
+    command: ["node_modules/.bin/prisma", "migrate", "deploy"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+    image: orderbot-app:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    <<: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    # No host port: only Caddy reaches the app, over the internal network.
+    expose: ["3000"]
+
+  worker:
+    # Same image as migrate (second build is a cache hit).
+    build: { context: ., dockerfile: Dockerfile.worker }
+    image: orderbot-worker:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    <<: *app-env
+    stop_grace_period: 30s
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  # HTTPS reverse proxy with automatic Let's Encrypt certificates. Ports 80 and 443 must be open.
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    command: ["caddy", "reverse-proxy", "--from", "${APP_DOMAIN:?set APP_DOMAIN}", "--to", "app:3000"]
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes: [caddydata:/data, caddyconfig:/config]
+    depends_on: [app]
+
+  # ---- OpenWA gateway (optional; uncomment to run it on the same server) ----
+  # The app talks to it at OPENWA_BASE_URL with header X-API-Key: OPENWA_API_KEY, and OpenWA posts
+  # webhooks to ${APP_URL}/api/webhooks/openwa. Build/pin it from https://github.com/rmyndharis/OpenWA
+  # (see docs/OPENWA.md); its own env var names come from that repo. Recommended: RESOLVE_LID_TO_PHONE=true.
+  # The API key you create in OpenWA (OPERATOR role, unscoped) goes in OPENWA_API_KEY.
+  # When enabled, set OPENWA_BASE_URL=http://openwa:2785 in .env.production. Do not publish its port.
+  #
+  # openwa:
+  #   build: { context: ../OpenWA }       # or `image:` pinned to a version tag you trust
+  #   restart: unless-stopped
+  #   env_file: .env.openwa
+  #   volumes: [openwadata:/app/data]     # WhatsApp auth state (path per OpenWA docs); losing it = every tenant re-scans
+  #   expose: ["2785"]
+
+volumes:
+  pgdata:
+  redisdata:
+  caddydata:
+  caddyconfig:
+  # openwadata:
