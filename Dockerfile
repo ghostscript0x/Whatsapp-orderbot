@@ -2,7 +2,7 @@
 # Next.js app image (standalone output). Requires `output: "standalone"` in next.config.ts.
 # Debian slim (glibc) rather than Alpine: matches Prisma's and @node-rs/argon2's prebuilt binaries.
 
-ARG NODE_VERSION=22.12.0
+ARG NODE_VERSION=22.20.0
 
 # ---- deps: install from the lockfile only (cached until package*.json changes) ----
 FROM node:${NODE_VERSION}-bookworm-slim AS deps

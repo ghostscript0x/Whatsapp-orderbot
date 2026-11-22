@@ -3,7 +3,7 @@
 # so there is no separate compile step to drift from the app build.
 # Also used by the one-shot `migrate` service (`prisma migrate deploy`), since it has the prisma CLI.
 
-ARG NODE_VERSION=22.12.0
+ARG NODE_VERSION=22.20.0
 
 FROM node:${NODE_VERSION}-bookworm-slim
 WORKDIR /app
