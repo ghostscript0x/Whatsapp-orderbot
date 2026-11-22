@@ -98,7 +98,7 @@ See `docs/OPENWA.md` for the API details.
    S3_SECRET_KEY=<token secret>
    S3_PUBLIC_URL=https://img.example.com        # or https://pub-xxxx.r2.dev
    ```
-5. Add a CORS rule on the bucket allowing `PUT` from `APP_URL` (browsers upload directly with presigned URLs).
+5. Add a CORS rule on the bucket allowing `PUT` from `APP_URL` (browsers upload directly with presigned URLs). With Garage, run `ENV_FILE=.env.production ./scripts/configure-garage-cors.sh`; the rule must include `content-type` and `content-length` (both are signed) or the browser's `OPTIONS` preflight is rejected with `403 This CORS request is not allowed`.
 
 ### 6. Deploying a new version
 
